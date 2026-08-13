@@ -1,0 +1,19 @@
+# 核心深度学习
+torch>=2.0.0
+torchvision>=0.15.0
+
+# 可视化操作界面
+streamlit>=1.30.0
+
+# 图像处理
+numpy>=1.24.0
+Pillow>=10.0.0
+opencv-python>=4.8.0
+scikit-image>=0.21.0
+
+# 绘图与配置
+matplotlib>=3.7.0
+PyYAML>=6.0
+
+# 投影仿真（可选，用于 DRR 生成与数据增强）
+# astra-toolbox>=2.1.0
