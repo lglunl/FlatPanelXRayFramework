@@ -22,8 +22,13 @@ from ..literature import (
     create_iteration_request,
     mark_request_status,
     get_literature_path,
+    remove_literature,
+    set_literature_category,
+    list_categories,
+    create_code_conversion_request,
+    list_code_conversion_requests,
 )
-from ..literature.extract import extract_text, extract_code_blocks
+from ..literature.extract import extract_text, extract_code_blocks, extract_all_code_blocks
 from ..models.registry import (
     list_models,
     discover,
@@ -95,21 +100,39 @@ def _render_library():
     if not records:
         st.info("暂无文献，请先导入。")
         return
-    st.dataframe(
-        [
-            {
-                "标题": r["title"],
-                "文件": r["file"],
-                "格式": r["ext"],
-                "大小(KB)": round(r["size"] / 1024, 1),
-                "代码块数": len(r["code_blocks"]),
-                "导入时间": r["imported_at"],
-            }
-            for r in records
-        ],
-        use_container_width=True,
-        hide_index=True,
-    )
+
+    cats = list_categories()
+    sel_cat = st.selectbox("按分类筛选", ["全部"] + cats, key="lit_cat_filter")
+    shown = records
+    if sel_cat != "全部":
+        shown = [r for r in records if (r.get("category") or "未分类") == sel_cat]
+    if not shown:
+        st.info("该分类下暂无文献。")
+
+    for r in shown:
+        n_code = len(r.get("code_blocks_all") or r.get("code_blocks") or [])
+        with st.expander(
+            f"{r['title']}　[{r.get('category') or '未分类'}]　（{r['file']}）"
+        ):
+            c1, c2, c3 = st.columns([2, 2, 1])
+            c1.write(
+                f"格式：{r['ext']} ｜ 大小：{round(r['size'] / 1024, 1)} KB ｜ "
+                f"代码块：{n_code} ｜ 导入：{r['imported_at']}"
+            )
+            cat_idx = cats.index(r.get("category")) if r.get("category") in cats else 0
+            cat = c2.selectbox(
+                "分类", cats, index=cat_idx, key=f"cat_sel_{r['file']}",
+                label_visibility="collapsed",
+            )
+            c2.markdown("")
+            if c2.button("设置分类", key=f"cat_btn_{r['file']}"):
+                set_literature_category(r["file"], cat)
+                st.success(f"已设置分类：{cat}")
+                st.rerun()
+            if c3.button("删除", key=f"del_{r['file']}", type="secondary"):
+                remove_literature(r["file"])
+                st.success(f"已删除 {r['file']}")
+                st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -122,16 +145,37 @@ def _render_extract():
     selected = st.selectbox("选择文献查看提取的代码", list(options.values()))
     file_name = next(k for k, v in options.items() if v == selected)
     text = extract_text(get_literature_path(file_name))
-    blocks = extract_code_blocks(text)
-    if not blocks:
-        st.info("未在文本中提取到 ```python 代码块。可检查原始内容：")
+    rec = next((r for r in records if r["file"] == file_name), None)
+    # 优先使用入库时记录的多语言代码块（含语言标签）
+    blocks_all = (rec or {}).get("code_blocks_all") or extract_all_code_blocks(text)
+    if not blocks_all:
+        st.info("未在文本中提取到代码块。可检查原始内容：")
         with st.expander("查看全文"):
             st.code(text[:6000], language=None)
         return
-    st.write(f"提取到 **{len(blocks)}** 个代码块：")
-    for i, block in enumerate(blocks, 1):
-        with st.expander(f"代码块 {i}（{len(block.splitlines())} 行）"):
-            st.code(block, language="python")
+    st.write(f"提取到 **{len(blocks_all)}** 个代码块：")
+    for i, b in enumerate(blocks_all):
+        lang = b.get("lang") or "text"
+        conv_tag = "　⚠️ 非 Python，需转换" if b.get("needs_conversion") else ""
+        with st.expander(
+            f"代码块 {i + 1}（{lang}，{len(b['code'].splitlines())} 行）{conv_tag}"
+        ):
+            st.code(b["code"], language="python" if b.get("is_python") else None)
+            if b.get("needs_conversion"):
+                st.warning("该代码块不是 Python，不能直接用于算法迭代。")
+                if st.button(
+                    "生成转换请求（自动转为 Python）",
+                    key=f"conv_{file_name}_{i}",
+                ):
+                    req = create_code_conversion_request(
+                        file_name, i, lang, b["code"]
+                    )
+                    st.success(
+                        f"已生成代码转换请求 `{req['id']}`。"
+                        "在对话中告诉 CodeBuddy “转换代码请求 `<id>`”，"
+                        "即可自动转为 Python 并回填到文献库。"
+                    )
+                    st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -283,11 +327,18 @@ def _render_request_form():
     )
     notes = st.text_input("备注（可选）", value="")
     if st.button("生成迭代请求", disabled=not goal.strip(), type="primary"):
-        # 收集所选文献的全部代码块供 AI 参考
+        # 收集所选文献的全部代码块供 AI 参考（非 Python 代码标注原始语言，提示需转换）
         snippets = []
         for r in records:
             if r["file"] in ref_files:
-                snippets.extend(r["code_blocks"])
+                for b in r.get("code_blocks_all") or []:
+                    if b["is_python"]:
+                        snippets.append(b["code"])
+                    else:
+                        snippets.append(
+                            f"# [原始语言: {b['lang']}] 以下代码需转换为 Python\n"
+                            f"{b['code']}"
+                        )
         request = create_iteration_request(
             base_model=base_model,
             goal=goal,
@@ -307,6 +358,26 @@ def _render_request_form():
 # ---------------------------------------------------------------------------
 def _render_request_list():
     st.subheader("7️⃣ 迭代请求列表")
+
+    # 代码转换请求（非 Python → Python）
+    convs = list_code_conversion_requests()
+    if convs:
+        st.markdown("**⚙️ 代码转换请求**（非 Python 代码 → Python）：")
+        for c in convs:
+            status_zh = "已完成" if c.get("status") == "done" else "待转换"
+            lang = c.get("lang") or "?"
+            with st.expander(
+                f"[{status_zh}] {c['id']} · {c['file']} · "
+                f"代码块 {c.get('block_index', 0) + 1}（{lang}）"
+            ):
+                st.code(c.get("code", "")[:2000], language=None)
+                if c.get("notes"):
+                    st.markdown(f"**备注**：{c['notes']}")
+                st.caption(
+                    "在对话中告诉 CodeBuddy “转换代码请求 `<id>`”，"
+                    "即可自动转为 Python 并回填到文献库。"
+                )
+
     requests = list_iteration_requests()
     if not requests:
         st.info("暂无迭代请求。")

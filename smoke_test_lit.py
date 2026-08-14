@@ -1,6 +1,7 @@
 """文献导入与算法迭代请求 - 冒烟测试
 
-验证闭环：导入文献 → 自动提取代码块 → 生成迭代请求 → 状态流转
+验证闭环：导入文献（多语言代码）→ 提取代码块 → 分类/删除 → 生成迭代请求
+        → 非 Python 代码转换请求 → 转换回填 → 状态流转
 运行：.venv\\Scripts\\python smoke_test_lit.py
 """
 import os
@@ -20,8 +21,19 @@ from xray_framework.literature import (
     list_iteration_requests,
     get_iteration_request,
     mark_request_status,
+    set_literature_category,
+    list_categories,
+    create_code_conversion_request,
+    list_code_conversion_requests,
+    get_code_conversion_request,
+    mark_conversion_status,
+    update_literature_code_blocks,
 )
-from xray_framework.literature.extract import extract_code_blocks, guess_title
+from xray_framework.literature.extract import (
+    extract_code_blocks,
+    extract_all_code_blocks,
+    guess_title,
+)
 from xray_framework.models.registry import (
     discover,
     list_models,
@@ -57,6 +69,13 @@ class ChannelAttention(nn.Module):
         return x * w
 ```
 
+## 参考实现（MATLAB）
+```matlab
+function y = myfilter(x)
+    y = imfilter(x, fspecial('gaussian', 5, 1));
+end
+```
+
 ## 结论
 注意力机制可有效抑制混叠伪影。
 """
@@ -65,23 +84,37 @@ class ChannelAttention(nn.Module):
 def main():
     passed = 0
 
-    # 1. 文本提取
+    # 1. 文本提取（含多语言代码识别）
     blocks = extract_code_blocks(MOCK_LIT)
-    assert len(blocks) == 1 and "ChannelAttention" in blocks[0], "代码块提取失败"
+    assert len(blocks) == 1 and "ChannelAttention" in blocks[0], "Python 代码块提取失败"
     assert "注意力机制的平板X射线" in guess_title(MOCK_LIT), "标题猜测失败"
+    allb = extract_all_code_blocks(MOCK_LIT)
+    assert len(allb) == 2, "多语言代码块提取失败"
+    mb = next((x for x in allb if x["lang"] == "matlab"), None)
+    assert mb is not None and mb["needs_conversion"], "非 Python 代码未标注需转换"
     passed += 1
-    print("[OK] 代码块提取与标题猜测")
+    print("[OK] 代码块提取与标题猜测（含多语言识别）")
 
     # 2. 保存文献
     save_literature_text("test_lit_attention.md", MOCK_LIT)
     records = list_literature()
     rec = next((r for r in records if r["file"] == "test_lit_attention.md"), None)
     assert rec is not None, "文献未入库"
-    assert len(rec["code_blocks"]) == 1, "入库文献未提取代码块"
+    assert len(rec["code_blocks"]) == 1, "入库文献未提取 Python 代码块"
+    assert len(rec["code_blocks_all"]) == 2, "入库文献未记录多语言代码块"
+    assert rec["category"] == "未分类", "文献默认分类错误"
     passed += 1
-    print("[OK] 文献入库与索引")
+    print("[OK] 文献入库与多语言代码索引")
 
-    # 3. 生成迭代请求
+    # 3. 文献分类
+    assert set_literature_category("test_lit_attention.md", "注意力机制"), "分类设置失败"
+    rec = next(r for r in list_literature() if r["file"] == "test_lit_attention.md")
+    assert rec["category"] == "注意力机制", "分类未生效"
+    assert "注意力机制" in list_categories(), "分类列表缺失"
+    passed += 1
+    print("[OK] 文献分类设置与列表")
+
+    # 4. 生成迭代请求
     req = create_iteration_request(
         base_model="unet",
         goal="引入文献中的通道注意力，改进 UNet 编码器抑制平板混叠伪影",
@@ -93,11 +126,16 @@ def main():
     assert req["base_model"] == "unet", "基类模型记录错误"
     assert len(req["references"]) == 1, "引用文献缺失"
     assert req["references"][0]["file"] == "test_lit_attention.md", "引用文献路径错误"
-    assert len(req["references"][0]["code_blocks"]) == 1, "引用文献代码块缺失"
+    assert len(req["references"][0]["code_blocks"]) == 1, "引用文献 Python 代码块缺失"
+    assert len(req["references"][0]["code_blocks_all"]) == 2, "引用文献多语言代码缺失"
+    assert any(
+        b["lang"] == "matlab" and b["needs_conversion"]
+        for b in req["references"][0]["code_blocks_all"]
+    ), "引用文献未标注非 Python 代码"
     passed += 1
-    print("[OK] 迭代请求生成")
+    print("[OK] 迭代请求生成（携带多语言代码）")
 
-    # 4. 请求列表与状态流转
+    # 5. 请求列表与状态流转
     reqs = list_iteration_requests()
     assert any(r["id"] == req["id"] for r in reqs), "请求未出现在列表"
     assert get_iteration_request(req["id"])["id"] == req["id"], "按 id 读取失败"
@@ -106,7 +144,7 @@ def main():
     passed += 1
     print("[OK] 请求列表与状态流转")
 
-    # 5. 新建模型类型的迭代请求
+    # 6. 新建模型类型的迭代请求
     req_new = create_iteration_request(
         base_model="",
         goal="根据引用文献设计全新的平板X射线去混叠网络",
@@ -119,7 +157,41 @@ def main():
     passed += 1
     print("[OK] 新建模型迭代请求")
 
-    # 6. 外部模型持久化注册
+    # 7. 非 Python 代码转换：生成转换请求 → 回填转换结果 → 状态流转
+    rec = next(r for r in list_literature() if r["file"] == "test_lit_attention.md")
+    m_idx = next(
+        i for i, b in enumerate(rec["code_blocks_all"]) if b["lang"] == "matlab"
+    )
+    conv = create_code_conversion_request(
+        "test_lit_attention.md", m_idx, "matlab",
+        rec["code_blocks_all"][m_idx]["code"], notes="转换为 Python",
+    )
+    assert conv["status"] == "pending", "转换请求初始状态错误"
+    assert conv["type"] == "code_conversion", "转换请求类型错误"
+    assert any(
+        c["id"] == conv["id"] for c in list_code_conversion_requests()
+    ), "转换请求未列出"
+    # 模拟 CodeBuddy 转换后回填
+    py_code = (
+        "import cv2\nimport numpy as np\n\n"
+        "def myfilter(x):\n"
+        "    k = cv2.getGaussianKernel(5, 1)\n"
+        "    return cv2.filter2D(x, -1, k)\n"
+    )
+    assert update_literature_code_blocks(
+        "test_lit_attention.md", m_idx, py_code
+    ), "转换结果回填失败"
+    rec = next(r for r in list_literature() if r["file"] == "test_lit_attention.md")
+    m_new = rec["code_blocks_all"][m_idx]
+    assert m_new["is_python"] and not m_new["needs_conversion"], "转换结果未生效"
+    assert m_new["converted_from"] == "matlab", "转换来源未记录"
+    assert any(py_code.strip() in b for b in rec["code_blocks"]), "转换后的 Python 未进入代码块列表"
+    assert mark_conversion_status(conv["id"], "done"), "转换状态流转失败"
+    assert get_code_conversion_request(conv["id"])["status"] == "done", "转换状态未生效"
+    passed += 1
+    print("[OK] 非 Python 代码转换（请求→回填→状态流转）")
+
+    # 8. 外部模型持久化注册（含权重保存到本地模型仓库）
     ext_py = os.path.join(tempfile.gettempdir(), "ext_smoke_model.py")
     with open(ext_py, "w", encoding="utf-8") as f:
         f.write(
@@ -160,12 +232,12 @@ def main():
     passed += 1
     print("[OK] 外部模型持久化注册（含权重保存到本地模型仓库）")
 
-    # 7. 清理测试数据
+    # 9. 清理测试数据
     remove_literature("test_lit_attention.md")
     assert not list_literature() or not any(
         r["file"] == "test_lit_attention.md" for r in list_literature()
     ), "测试文献未清理"
-    for rid in (req["id"], req_new["id"]):
+    for rid in (req["id"], req_new["id"], conv["id"]):
         req_file = os.path.join(ROOT, "requests", f"{rid}.json")
         if os.path.exists(req_file):
             os.remove(req_file)
@@ -185,7 +257,7 @@ def main():
     passed += 1
     print("[OK] 清理测试数据")
 
-    print(f"\n全部通过 ({passed}/7)")
+    print(f"\n全部通过 ({passed}/9)")
 
 
 if __name__ == "__main__":
