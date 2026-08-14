@@ -5,6 +5,7 @@
 """
 import os
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
@@ -21,6 +22,14 @@ from xray_framework.literature import (
     mark_request_status,
 )
 from xray_framework.literature.extract import extract_code_blocks, guess_title
+from xray_framework.models.registry import (
+    discover,
+    list_models,
+    add_external_model,
+    _load_external_records,
+    _save_external_records,
+    _EXTERNAL_DIR,
+)
 
 MOCK_LIT = """# 基于注意力机制的平板X射线混叠抑制
 
@@ -96,18 +105,65 @@ def main():
     passed += 1
     print("[OK] 请求列表与状态流转")
 
-    # 5. 清理测试数据
+    # 5. 新建模型类型的迭代请求
+    req_new = create_iteration_request(
+        base_model="",
+        goal="根据引用文献设计全新的平板X射线去混叠网络",
+        ref_files=["test_lit_attention.md"],
+        code_snippets=[],
+        request_type="new",
+    )
+    assert req_new["request_type"] == "new", "新建模型类型未记录"
+    assert req_new["base_model"] == "", "新建模型基类应为空"
+    passed += 1
+    print("[OK] 新建模型迭代请求")
+
+    # 6. 外部模型持久化注册
+    ext_py = os.path.join(tempfile.gettempdir(), "ext_smoke_model.py")
+    with open(ext_py, "w", encoding="utf-8") as f:
+        f.write(
+            "import torch.nn as nn\n"
+            "from xray_framework.models.base import BaseImageModel\n\n"
+            "class SimpleResBlock(BaseImageModel):\n"
+            "    '''simple external model'''\n"
+            "    def __init__(self, in_channels=1, out_channels=1, **kwargs):\n"
+            "        super().__init__(in_channels=in_channels, out_channels=out_channels)\n"
+            "        self.conv = nn.Conv2d(in_channels, out_channels, 3, padding=1)\n"
+            "    def forward(self, x):\n"
+            "        return self.conv(x)\n"
+        )
+    discover()
+    name = add_external_model(ext_py, registry_name="ext_res", class_name="SimpleResBlock")
+    assert name == "ext_res", "外部模型注册名错误"
+    assert "ext_res" in list_models(), "外部模型未出现在模型列表"
+    # 持久化记录存在
+    recs = _load_external_records()
+    assert any(r["registry_name"] == "ext_res" for r in recs), "外部模型未持久化"
+    passed += 1
+    print("[OK] 外部模型持久化注册")
+
+    # 7. 清理测试数据
     remove_literature("test_lit_attention.md")
     assert not list_literature() or not any(
         r["file"] == "test_lit_attention.md" for r in list_literature()
     ), "测试文献未清理"
-    req_file = os.path.join(ROOT, "requests", f"{req['id']}.json")
-    if os.path.exists(req_file):
-        os.remove(req_file)
+    for rid in (req["id"], req_new["id"]):
+        req_file = os.path.join(ROOT, "requests", f"{rid}.json")
+        if os.path.exists(req_file):
+            os.remove(req_file)
+    # 清理外部模型
+    import xray_framework.models.registry as _reg
+    _reg.MODEL_REGISTRY.pop("ext_res", None)
+    _save_external_records([r for r in recs if r["registry_name"] != "ext_res"])
+    dst = os.path.join(_EXTERNAL_DIR, "ext_smoke_model.py")
+    if os.path.exists(dst):
+        os.remove(dst)
+    if os.path.exists(ext_py):
+        os.remove(ext_py)
     passed += 1
     print("[OK] 清理测试数据")
 
-    print(f"\n全部通过 ({passed}/5)")
+    print(f"\n全部通过 ({passed}/7)")
 
 
 if __name__ == "__main__":
