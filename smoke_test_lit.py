@@ -26,6 +26,7 @@ from xray_framework.models.registry import (
     discover,
     list_models,
     add_external_model,
+    list_local_models,
     _load_external_records,
     _save_external_records,
     _EXTERNAL_DIR,
@@ -133,14 +134,31 @@ def main():
             "        return self.conv(x)\n"
         )
     discover()
-    name = add_external_model(ext_py, registry_name="ext_res", class_name="SimpleResBlock")
+    w_path = os.path.join(tempfile.gettempdir(), "ext_smoke_weights.pth")
+    with open(w_path, "wb") as f:
+        f.write(b"\x80\x03}q\x00X\x01\x00\x00\x00aq\x01K\x01s.")  # 占位权重
+    name = add_external_model(
+        ext_py, registry_name="ext_res", class_name="SimpleResBlock", weights_path=w_path
+    )
     assert name == "ext_res", "外部模型注册名错误"
     assert "ext_res" in list_models(), "外部模型未出现在模型列表"
     # 持久化记录存在
     recs = _load_external_records()
     assert any(r["registry_name"] == "ext_res" for r in recs), "外部模型未持久化"
+    # 权重已统一复制到本地模型仓库 outputs/models/external/ 并记录路径
+    rec_ext = next(r for r in recs if r["registry_name"] == "ext_res")
+    weights_saved = rec_ext.get("weights", "")
+    assert weights_saved and os.path.isfile(weights_saved), "外部模型权重未保存到本地仓库"
+    assert weights_saved.replace("\\", "/").endswith(
+        "outputs/models/external/ext_res.pth"
+    ), f"权重保存位置错误: {weights_saved}"
+    # 本地模型仓库可见该权重
+    local = list_local_models()
+    assert any(
+        m["path"] == os.path.abspath(weights_saved) for m in local
+    ), "本地模型仓库未列出外部权重"
     passed += 1
-    print("[OK] 外部模型持久化注册")
+    print("[OK] 外部模型持久化注册（含权重保存到本地模型仓库）")
 
     # 7. 清理测试数据
     remove_literature("test_lit_attention.md")
@@ -160,6 +178,10 @@ def main():
         os.remove(dst)
     if os.path.exists(ext_py):
         os.remove(ext_py)
+    if weights_saved and os.path.exists(weights_saved):
+        os.remove(weights_saved)
+    if os.path.exists(w_path):
+        os.remove(w_path)
     passed += 1
     print("[OK] 清理测试数据")
 

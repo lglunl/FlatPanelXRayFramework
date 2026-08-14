@@ -9,6 +9,9 @@ from .registry import (
     model_info,
     add_external_model,
     list_external_models,
+    list_local_models,
+    MODELS_DIR,
+    EXTERNAL_MODELS_DIR,
 )
 
 __all__ = [
@@ -20,4 +23,7 @@ __all__ = [
     "model_info",
     "add_external_model",
     "list_external_models",
+    "list_local_models",
+    "MODELS_DIR",
+    "EXTERNAL_MODELS_DIR",
 ]

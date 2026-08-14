@@ -24,7 +24,13 @@ from ..literature import (
     get_literature_path,
 )
 from ..literature.extract import extract_text, extract_code_blocks
-from ..models.registry import list_models, discover, add_external_model
+from ..models.registry import (
+    list_models,
+    discover,
+    add_external_model,
+    list_external_models,
+    list_local_models,
+)
 
 REQ_STATUS = {"pending": "待实现", "done": "已完成"}
 REQ_TYPE = {"improve": "改进现有模型", "new": "新建模型"}
@@ -41,6 +47,7 @@ def render():
     _render_library()
     _render_extract()
     _render_external_model()
+    _render_model_store()
     _render_request_form()
     _render_request_list()
 
@@ -147,49 +154,94 @@ def _render_external_model():
         reg_name = col4.text_input("注册名（可选，默认类名小写）", key="ext_reg")
 
         if st.button("导入并注册", disabled=py_up is None):
-            tmp_py = ""
+            tmp_py, tmp_w = "", ""
             try:
                 with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as tf:
                     tf.write(py_up.getbuffer())
                     tmp_py = tf.name
+                if w_up is not None:
+                    ext_w = os.path.splitext(w_up.name)[1] or ".pth"
+                    with tempfile.NamedTemporaryFile(
+                        suffix=ext_w, delete=False
+                    ) as tfw:
+                        tfw.write(w_up.getbuffer())
+                        tmp_w = tfw.name
                 name = add_external_model(
                     tmp_py,
                     registry_name=reg_name.strip(),
                     class_name=class_name.strip(),
+                    weights_path=tmp_w,
                 )
-                # 可选权重：保存到 outputs/models/external/<注册名>.pth
-                weights_saved = ""
-                if w_up is not None:
-                    wdir = os.path.join("outputs", "models", "external")
-                    os.makedirs(wdir, exist_ok=True)
-                    weights_saved = os.path.join(wdir, f"{name}.pth")
-                    with open(weights_saved, "wb") as f:
-                        f.write(w_up.getbuffer())
+                weights_saved = next(
+                    (r.get("weights", "") for r in list_external_models()
+                     if r.get("registry_name") == name),
+                    "",
+                )
                 st.success(f"外部模型已注册：`{name}`，可在训练/推理的模型列表中选择。")
                 if weights_saved:
-                    st.info(f"权重已保存：`{weights_saved}`")
+                    st.info(f"权重已保存到本地模型仓库：`{weights_saved}`")
                 st.rerun()
             except Exception as e:
                 st.error(f"导入失败：{e}")
             finally:
-                if tmp_py and os.path.exists(tmp_py):
-                    os.unlink(tmp_py)
+                for p in (tmp_py, tmp_w):
+                    if p and os.path.exists(p):
+                        os.unlink(p)
 
     # 已注册的外部模型一览
-    from ..models.registry import list_external_models
     exts = list_external_models()
     if exts:
         st.write(f"已注册外部模型（{len(exts)} 个）：")
         st.dataframe(
-            [{"注册名": r["registry_name"], "文件": r["file"], "类名": r["class_name"]} for r in exts],
+            [
+                {
+                    "注册名": r["registry_name"],
+                    "文件": r["file"],
+                    "类名": r["class_name"],
+                    "本地权重": r.get("weights") or "（未上传）",
+                }
+                for r in exts
+            ],
             use_container_width=True,
             hide_index=True,
         )
 
 
 # ---------------------------------------------------------------------------
+def _render_model_store():
+    st.subheader("5️⃣ 本地模型仓库")
+    st.caption(
+        "所有模型权重统一保存在本地 `outputs/models/`：训练产物、外部模型上传的权重、"
+        "按论文生成的新模型权重，都会自动归档到这里。"
+    )
+    items = list_local_models()
+    if not items:
+        st.info(
+            "本地模型仓库为空。训练模型、导入外部模型（携带权重）或按论文生成新模型后，"
+            "权重会自动保存到这里。"
+        )
+        return
+    st.dataframe(
+        [
+            {
+                "模型": m["model"],
+                "文件": m["rel"],
+                "大小(MB)": m["size_mb"],
+                "来源": "外部模型权重" if m["kind"] == "external" else "训练产物",
+                "路径": m["path"],
+            }
+            for m in items
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+    if st.button("刷新列表"):
+        st.rerun()
+
+
+# ---------------------------------------------------------------------------
 def _render_request_form():
-    st.subheader("5️⃣ 创建算法迭代请求")
+    st.subheader("6️⃣ 创建算法迭代请求")
     discover()
     models = list_models()
     records = list_literature()
@@ -254,7 +306,7 @@ def _render_request_form():
 
 # ---------------------------------------------------------------------------
 def _render_request_list():
-    st.subheader("6️⃣ 迭代请求列表")
+    st.subheader("7️⃣ 迭代请求列表")
     requests = list_iteration_requests()
     if not requests:
         st.info("暂无迭代请求。")
