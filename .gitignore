@@ -12,6 +12,10 @@ outputs/models/
 outputs/results/
 outputs/logs/
 
+# 运行时数据（文献库与迭代请求，由代码自动创建）
+literature/
+requests/
+
 # IDE
 .idea/
 .vscode/

@@ -83,7 +83,7 @@ class ExtUNet(BaseImageModel):
     print("外部模型输出 shape:", out2.shape)
     print("新模型已注册:", "ext_unet" in list_models())
 
-    print("\n✅ 全部冒烟测试通过！")
+    print("\n[OK] 全部冒烟测试通过！")
 
 def read_gray(path):
     img = Image.open(path).convert("L")

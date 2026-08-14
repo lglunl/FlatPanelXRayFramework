@@ -18,6 +18,7 @@ import streamlit as st
 from xray_framework.models.registry import list_models
 from xray_framework.ui.train_page import render_train_page
 from xray_framework.ui.infer_page import render_infer_page
+from xray_framework.ui.lit_page import render as render_lit_page
 from xray_framework import __version__
 
 st.set_page_config(
@@ -35,7 +36,7 @@ with st.sidebar:
 
     nav = st.radio(
         "导航",
-        ["模型训练", "模型推理"],
+        ["模型训练", "模型推理", "文献导入"],
         label_visibility="collapsed",
     )
 
@@ -48,13 +49,15 @@ with st.sidebar:
 
     st.divider()
     st.caption("""
-**算法迭代说明**：新增算法时，将实现 `BaseImageModel` 并
-用 `@register_model` 注册的 `.py` 文件放入
+**算法迭代说明**：在「文献导入」页上传文献并生成迭代请求，
+CodeBuddy 读取请求后实现新算法；新增的 `.py` 文件放入
 `xray_framework/models/algorithms/` 目录即可被自动发现。
 """)
 
 # ---------- 主内容 ----------
 if nav == "模型训练":
     render_train_page()
-else:
+elif nav == "模型推理":
     render_infer_page()
+else:
+    render_lit_page()

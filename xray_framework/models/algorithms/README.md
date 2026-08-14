@@ -29,6 +29,17 @@ class MyAlgoModel(BaseImageModel):
 
 3. **保存文件**，刷新 Streamlit 页面，模型下拉框即可选择 `my_algo`。
 
+## 文献驱动的算法迭代（推荐流程）
+
+在界面「文献导入」页上传文献并生成迭代请求（`requests/iter_*.json`）后，
+CodeBuddy 按以下流程实现：
+
+1. 读取 `requests/iter_xxx.json`，了解基类模型与迭代目标
+2. 解析引用文献（`literature/` 下原文）与代码块
+3. 在本目录实现新算法文件（继承基类 + `@register_model`）
+4. 运行 `smoke_test.py` 验证可训练可推理
+5. 刷新界面，新算法出现在模型下拉框
+
 ## 迭代记录建议
 
 每实现一个新算法，建议在本目录附带说明文档（如 `my_algo_notes.md`），记录：
